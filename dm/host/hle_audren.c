@@ -246,11 +246,15 @@ static int capture(const uint8_t *cl, size_t len, int16_t *dst) {
     uint32_t ncmd = *(const uint32_t *)(cl + 4), samples = *(const uint32_t *)(cl + 0x14), rate = *(const uint32_t *)(cl + 0x18);
     const int32_t *mix = *(const int32_t *const *)(cl + 8); const uint8_t *cend = cl + len;
     static int logged, hist_logged, layout_done;
-    if (!layout_done && ncmd) {   // first command list: the header layout (SDK 21's first lists have 4 commands or fewer, which the old layout would report as malformed)
-        layout_done = 1;
-        if (!cmd_walks(cl, ncmd, cend)) { g_hdr6 = 1; if (cmd_walks(cl, ncmd, cend)) { g_sink_id = 0x10; LOG("audren: command headers in the SDK 6 layout (+4 size, +6 command ID, +0x10 enabled), DeviceSink is ID 0x10"); } else g_hdr6 = 0; }
-        if (!g_hdr6 && !cmd_walks(cl, ncmd, cend)) { g_hdr21 = 1; if (cmd_walks(cl, ncmd, cend)) LOG("audren: command headers in the SDK 21 layout (no magic: +0 enabled, +1 command ID, +2 size), DeviceSink 0x140 bytes"); else g_hdr21 = 0; }
+    if (!layout_done && ncmd) {   // the header layout, from the first list that walks in one (SDK 21's first lists have 4 commands or fewer, which the old layout would report as malformed)
+        // A list generated before the game's first update need not walk in any layout: Mario Kart 8 Deluxe's (SDK 4.4.0) first list, made by the render thread before the first
+        // RequestUpdate, ends in a zeroed command (first word 0). Taken as the layout, it left the SDK 6 headers read in the newer layout and the game silent; such a list is skipped
+        if (cmd_walks(cl, ncmd, cend)) layout_done = 1;
+        else { g_hdr6 = 1; if (cmd_walks(cl, ncmd, cend)) { layout_done = 1; g_sink_id = 0x10; LOG("audren: command headers in the SDK 6 layout (+4 size, +6 command ID, +0x10 enabled), DeviceSink is ID 0x10"); } else g_hdr6 = 0; }
+        if (!layout_done) { g_hdr21 = 1; if (cmd_walks(cl, ncmd, cend)) { layout_done = 1; LOG("audren: command headers in the SDK 21 layout (no magic: +0 enabled, +1 command ID, +2 size), DeviceSink 0x140 bytes"); } else g_hdr21 = 0; }
+        if (!layout_done) { static int skipped; if (!skipped++) LOG("audren: command list %u commands long walks in no header layout (generated before the first update?): silent frame, the layout is taken from a later list", ncmd); return 0; }
     }
+    if (!layout_done) return 0;
     if (!hist_logged && ncmd > 4) {   // first full command list: command ID histogram and the sink ID check
         hist_logged = 1;
         int hist[64] = {0}, cand = -1, ncand = 0, cand4 = -1, ncand4 = 0, sink_sz = 0x148 + sink_body(); const uint8_t *q = cl + 0x20; char line[512]; size_t o = 0;
